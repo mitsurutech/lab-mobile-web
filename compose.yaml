@@ -1,0 +1,373 @@
+# Mobile web basics: a small habit tracker web app to make work on a phone, with a page to
+# preview it, in a JupyterLab of your own.
+#
+# Your copy is the only thing you may use, and it is the only thing you can reach: this lab
+# has no way out to the internet, so nothing you try can touch anybody else's machine.
+# Never point a tool at a site you do not own, in a lab or anywhere else.
+#
+# Open JupyterLab from the lab's page, and the Preview link beside it. The work folder holds
+# app/, the habit tracker (index.html, style.css, app.js, manifest.webmanifest, sw.js and two
+# icons), start.ipynb, and steps/, short scripts that each look at one idea. The Preview link
+# serves the folder app/ as it is now, so edit a file in JupyterLab, save, and reload the
+# preview. To see a phone layout, make the browser window narrow or open the browser's own
+# device view. The terminal beside the lab reaches the same Python with docker exec, for example
+#   docker exec jupyter python3 steps/viewport.py
+#
+# Hand in app/style.css after you make the small buttons big enough to press with a thumb, and
+# a sentence on what you changed and how you checked it in your browser.
+#
+# The image runs as its own unprivileged account and needs no capabilities. JupyterLab asks
+# for no token, because the platform's own door in front of it already knows who you are; do
+# not run it like this anywhere else. Nothing is saved: download your files before you stop
+# the lab, because stopping it forgets every file you made.
+
+services:
+  jupyter:
+    image: jupyter/scipy-notebook:2023-10-20
+    user: "1000:100"
+    expose: ["8888", "8000"]
+    working_dir: /home/jovyan/work
+    environment:
+      HOME: /home/jovyan
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        mkdir -p /home/jovyan/work /tmp/lab
+        cat > /tmp/lab/make.py <<'PY'
+        import json, os, struct, zlib
+
+        # Every file is written from fixed text, the same every time, nothing downloaded.
+        files = {}
+
+        files["app/index.html"] = r"""<!doctype html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="theme-color" content="#2f6f4f">
+          <title>Habit tracker</title>
+          <link rel="stylesheet" href="style.css">
+          <link rel="manifest" href="manifest.webmanifest">
+        </head>
+        <body>
+          <header>
+            <h1>Habit tracker</h1>
+          </header>
+          <main>
+            <form id="add">
+              <label for="name">New habit</label>
+              <input id="name" type="text" placeholder="Stretch for five minutes" required>
+              <button class="add" type="submit">Add</button>
+            </form>
+            <div class="filters">
+              <button class="filter" type="button" data-show="all">All</button>
+              <button class="filter" type="button" data-show="todo">To do</button>
+              <button class="filter" type="button" data-show="done">Done</button>
+            </div>
+            <ul id="list"></ul>
+          </main>
+          <script src="app.js"></script>
+        </body>
+        </html>
+        """
+
+        files["app/style.css"] = r"""/* Mobile first: the plain rules are the phone, the media queries add room for bigger screens. */
+        :root { --bg: #fafaf7; --fg: #1d2b24; --accent: #2f6f4f; --card: #ffffff; }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.4; }
+        header { background: var(--accent); color: #ffffff; padding: 12px 16px; }
+        h1 { margin: 0; font-size: 1.25rem; }
+        main { padding: 16px; }
+        form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+        input { font-size: 1rem; padding: 10px; border: 1px solid #888888; border-radius: 6px; }
+        .add { height: 32px; background: var(--accent); color: #ffffff; border: 0; border-radius: 6px; }
+        .filters { display: flex; gap: 8px; margin-bottom: 16px; }
+        .filter { min-height: 36px; padding: 0 12px; }
+        ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr; gap: 8px; }
+        li { display: flex; justify-content: space-between; align-items: center; background: var(--card); padding: 8px 12px; border-radius: 8px; }
+        li.done span { text-decoration: line-through; opacity: 0.6; }
+        .done-button { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--accent); background: var(--card); }
+
+        @media (min-width: 600px) {
+          main { padding: 24px; }
+          form { flex-direction: row; align-items: center; }
+          input { flex: 1; }
+        }
+
+        @media (min-width: 900px) {
+          main { max-width: 860px; margin: 0 auto; }
+          ul { grid-template-columns: 1fr 1fr; }
+        }
+
+        @media (prefers-color-scheme: dark) {
+          :root { --bg: #14201a; --fg: #e8efe9; --card: #1f2f27; }
+        }
+        """
+
+        files["app/app.js"] = r"""// The list lives in localStorage, so it is still there after a reload.
+        const KEY = "habits";
+        let habits = JSON.parse(localStorage.getItem(KEY) || "null") || [
+          { text: "Drink a glass of water", done: false },
+          { text: "Walk for ten minutes", done: false },
+          { text: "Read one page", done: true },
+        ];
+        let show = "all";
+
+        function save() {
+          localStorage.setItem(KEY, JSON.stringify(habits));
+        }
+
+        function draw() {
+          const list = document.getElementById("list");
+          list.innerHTML = "";
+          habits.forEach((habit, index) => {
+            if (show === "todo" && habit.done) return;
+            if (show === "done" && !habit.done) return;
+            const item = document.createElement("li");
+            if (habit.done) item.className = "done";
+            const label = document.createElement("span");
+            label.textContent = habit.text;
+            const button = document.createElement("button");
+            button.className = "done-button";
+            button.setAttribute("aria-label", "Mark done or not done");
+            button.addEventListener("click", () => {
+              habits[index].done = !habits[index].done;
+              save();
+              draw();
+            });
+            item.append(label, button);
+            list.append(item);
+          });
+        }
+
+        document.getElementById("add").addEventListener("submit", (event) => {
+          event.preventDefault();
+          const box = document.getElementById("name");
+          habits.push({ text: box.value, done: false });
+          box.value = "";
+          save();
+          draw();
+        });
+
+        document.querySelectorAll(".filter").forEach((button) => {
+          button.addEventListener("click", () => {
+            show = button.dataset.show;
+            draw();
+          });
+        });
+
+        draw();
+
+        // A service worker is only allowed on a secure address, so the browser may refuse this on
+        // the preview link. Its console says which.
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker.register("sw.js").catch((error) => console.log("no service worker:", error.message));
+        }
+        """
+
+        files["app/manifest.webmanifest"] = r"""{
+          "name": "Habit tracker",
+          "short_name": "Habits",
+          "start_url": "/",
+          "display": "standalone",
+          "theme_color": "#2f6f4f",
+          "icons": [
+            { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+            { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+          ]
+        }
+        """
+
+        files["app/sw.js"] = r"""// A service worker that keeps a copy of the app's files, so the page can open with no network.
+        const CACHE = "habits-v1";
+        const FILES = ["/", "/index.html", "/style.css", "/app.js", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/offline.html"];
+
+        self.addEventListener("install", (event) => {
+          event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)));
+        });
+
+        self.addEventListener("fetch", (event) => {
+          event.respondWith(caches.match(event.request).then((hit) => hit || fetch(event.request)));
+        });
+        """
+
+        def icon(size, path):
+            # A green square with a pale square in the middle, drawn with the standard library.
+            rows = b""
+            for y in range(size):
+                row = bytes([0])
+                for x in range(size):
+                    inside = size // 4 <= x < size - size // 4 and size // 4 <= y < size - size // 4
+                    row += bytes((232, 239, 233)) if inside else bytes((47, 111, 79))
+                rows += row
+            def chunk(kind, data):
+                body = kind + data
+                return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+            png = (bytes((137, 80, 78, 71, 13, 10, 26, 10))
+                   + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+                   + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+            with open(path, "wb") as out:
+                out.write(png)
+
+        def md(text):
+            return {"cell_type": "markdown", "metadata": {}, "source": text}
+
+        def code(text):
+            return {"cell_type": "code", "metadata": {}, "source": text, "outputs": [],
+                    "execution_count": None}
+
+        cells = [
+            md("# Mobile web basics\n\nThe folder app/ is a small habit tracker. The Preview link on the "
+               "lab's page serves it. Open it in your browser, make the window narrow, and look at "
+               "the page the way a phone would. Edit a file in app/, save it and reload the preview. "
+               "Run each cell below with Shift and Enter."),
+            md("## The viewport\n\nWithout the viewport tag a phone draws the page as if it were a wide "
+               "desktop screen and shrinks it."),
+            code("%run steps/viewport.py"),
+            md("## The breakpoints\n\nEach media query switches some rules on at a width."),
+            code("%run steps/breakpoints.py"),
+            md("## Thumbs\n\nA finger is bigger than a mouse pointer. Which buttons are too small?"),
+            code("%run steps/touch.py"),
+            md("## The manifest and the service worker"),
+            code("%run steps/manifest.py"),
+            code("%run steps/offline.py"),
+            md("## Your own question\n\nChange a width in app/style.css, save, and run the cell for "
+               "touch.py again. Did the answer change?"),
+        ]
+        book = {"cells": cells, "nbformat": 4, "nbformat_minor": 5,
+                "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3 (ipykernel)",
+                                            "language": "python"},
+                             "language_info": {"name": "python"}}}
+
+        steps = {}
+
+        steps["viewport.py"] = r"""from html.parser import HTMLParser
+
+
+        class Find(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.content = None
+
+            def handle_starttag(self, tag, attrs):
+                found = dict(attrs)
+                if tag == "meta" and found.get("name") == "viewport":
+                    self.content = found.get("content", "")
+
+
+        page = Find()
+        page.feed(open("app/index.html").read())
+        if page.content is None:
+            print("viewport meta tag: MISSING")
+        else:
+            print("viewport meta tag: found")
+            print("content:", page.content)
+            print("width=device-width in it:", "width=device-width" in page.content)
+        """
+
+        steps["manifest.py"] = r"""import json
+        import os
+
+        manifest = json.load(open("app/manifest.webmanifest"))
+        for key in ["name", "short_name", "start_url", "display", "icons", "theme_color", "background_color"]:
+            print(key.ljust(17), "present" if key in manifest else "MISSING")
+        print("display is", manifest.get("display"))
+        for icon in manifest.get("icons", []):
+            print("icon", icon["src"], icon["sizes"], "file exists:", os.path.exists("app/" + icon["src"]))
+        """
+
+        steps["breakpoints.py"] = r"""import re
+
+        css = open("app/style.css").read()
+        queries = re.findall(r"@media\s*([^{]+)\{", css)
+        print("media queries:", len(queries))
+        for query in queries:
+            query = query.strip()
+            widths = re.findall(r"(\d+)px", query)
+            if widths:
+                print(query, "-> width", widths[0] + " px")
+            else:
+                print(query, "-> not a width, a preference")
+        """
+
+        steps["touch.py"] = r"""import re
+
+        css = open("app/style.css").read()
+        under = 0
+        for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            selector = selector.strip()
+            if not selector.startswith("."):
+                continue
+            for prop, size in re.findall(r"(?<![-\w])(min-height|min-width|height|width)\s*:\s*(\d+)px", body):
+                small = int(size) < 44
+                under += small
+                print(selector.ljust(14), prop.ljust(11), size.rjust(3), "px", "UNDER 44" if small else "ok")
+        print("under 44 px:", under)
+        """
+
+        steps["offline.py"] = r"""import os
+        import re
+
+        worker = open("app/sw.js").read()
+        name = re.search(r"CACHE\s*=\s*\"([^\"]+)\"", worker).group(1)
+        listed = re.search(r"FILES\s*=\s*\[([^\]]*)\]", worker).group(1)
+        files = re.findall(r"\"([^\"]+)\"", listed)
+        print("cache name:", name)
+        print("files to cache:", len(files))
+        missing = 0
+        for name in files:
+            path = "app/index.html" if name == "/" else "app" + name
+            here = os.path.exists(path)
+            missing += not here
+            print(name.ljust(24), "exists" if here else "MISSING")
+        print("missing:", missing)
+        """
+
+        steps["serve.py"] = r"""import urllib.request
+
+        for path in ["/", "/manifest.webmanifest", "/sw.js"]:
+            try:
+                answer = urllib.request.urlopen("http://127.0.0.1:8000" + path, timeout=3)
+                print(path.ljust(24), answer.status, answer.headers.get("Content-Type"))
+            except OSError as error:
+                print(path.ljust(24), "no answer:", error)
+        """
+
+        for path, text in files.items():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as out:
+                out.write(text)
+        icon(192, "app/icon-192.png")
+        icon(512, "app/icon-512.png")
+        with open("start.ipynb", "w") as out:
+            json.dump(book, out, indent=1)
+        os.makedirs("steps", exist_ok=True)
+        for name, text in steps.items():
+            with open(os.path.join("steps", name), "w") as out:
+                out.write(text)
+        PY
+        cd /home/jovyan/work
+        python3 /tmp/lab/make.py
+        python3 -m http.server 8000 --directory /home/jovyan/work/app > /tmp/lab/preview.log 2>&1 &
+        exec jupyter lab --no-browser --ip=0.0.0.0 --port=8888 \
+          --ServerApp.root_dir=/home/jovyan/work \
+          --IdentityProvider.token= --ServerApp.password= \
+          '--ServerApp.allow_origin=*' --ServerApp.allow_remote_access=True \
+          --LabApp.check_for_updates_class=jupyterlab.NeverCheckForUpdate \
+          --LabApp.news_url=None
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/api', timeout=3); urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    labels:
+      lab.title: JupyterLab, and Preview on the second link
+      lab.open: "8888,8000"
